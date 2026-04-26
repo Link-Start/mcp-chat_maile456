@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+uploads/
+*.pyc
+node_modules/
+.vscode/
+static/
