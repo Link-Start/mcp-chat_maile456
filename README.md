@@ -73,12 +73,12 @@ MCP Chat 通过 MCP 协议让 IDE 里的 AI 进入一个 **chat() 循环** — �
 
 > 💡 **最佳搭配：GitHub Copilot（无限请求）+ MCP Chat = 免费无限 AI API 服务**
 
-<details>
+
 <summary>📸 查看实际运行截图 — 一次 Copilot 对话，chat() 无限循环调用</summary>
 <p align="center">
   <img src="web-ui/public/mcp-chat.png" width="400" />
 </p>
-</details>
+
 
 ### 功能特性
 
