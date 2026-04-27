@@ -1064,6 +1064,48 @@ def _extract_user_text_from_responses_input(body: dict) -> str:
     return user_text
 
 
+def _extract_last_user_text_from_messages(
+    messages: list, text_types: tuple[str, ...] = ("text", "input_text")
+) -> str:
+    """Extract last user text from a messages list.
+
+    Supports both string content and content blocks.
+    """
+    if not isinstance(messages, list):
+        return ""
+
+    for m in reversed(messages):
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") != "user":
+            continue
+
+        content = m.get("content", "")
+        if isinstance(content, str):
+            txt = content.strip()
+            if txt:
+                return txt
+        elif isinstance(content, list):
+            parts = []
+            for c in content:
+                if isinstance(c, str):
+                    txt = c.strip()
+                    if txt:
+                        parts.append(txt)
+                    continue
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") in text_types:
+                    t = c.get("text", "")
+                    if t:
+                        parts.append(str(t))
+            txt = " ".join(parts).strip()
+            if txt:
+                return txt
+
+    return ""
+
+
 @mcp.custom_route("/v1/chat/completions", methods=["POST"])
 async def api_chat_completions(request):
     """OpenAI-compatible Chat Completions endpoint.
@@ -1105,17 +1147,7 @@ async def api_chat_completions(request):
         )
 
     # Extract the last user message
-    last_user_msg = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            content = m.get("content", "")
-            if isinstance(content, list):
-                last_user_msg = " ".join(
-                    c.get("text", "") for c in content if c.get("type") == "text"
-                )
-            else:
-                last_user_msg = str(content)
-            break
+    last_user_msg = _extract_last_user_text_from_messages(messages)
 
     if not last_user_msg:
         return JSONResponse(
@@ -1136,6 +1168,7 @@ async def api_chat_completions(request):
             {"error": {"message": bridge_err, "type": "server_error"}},
             status_code=bridge_status,
         )
+    ai_response = ai_response or ""
 
     # Build OpenAI-compatible response
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -1242,6 +1275,7 @@ async def api_responses(request):
             {"error": {"message": bridge_err, "type": "server_error"}},
             status_code=bridge_status,
         )
+    ai_response = ai_response or ""
 
     created = int(_time.time())
     response_id = f"resp_{uuid.uuid4().hex[:12]}"
@@ -1319,6 +1353,151 @@ async def api_responses(request):
     return JSONResponse(response_obj)
 
 
+@mcp.custom_route("/v1/messages", methods=["POST"])
+async def api_anthropic_messages(request):
+    """Anthropic-compatible Messages endpoint."""
+    from starlette.responses import JSONResponse, StreamingResponse
+    import time as _time
+
+    err = _check_api_key(request)
+    if err:
+        return JSONResponse(
+            {
+                "type": "error",
+                "error": {"type": "authentication_error", "message": err},
+            },
+            status_code=401,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Invalid JSON",
+                },
+            },
+            status_code=400,
+        )
+
+    messages = body.get("messages", [])
+    model = body.get("model", "claude-sonnet-4-20250514")
+    stream = bool(body.get("stream", False))
+
+    if not messages:
+        return JSONResponse(
+            {
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "messages is required",
+                },
+            },
+            status_code=400,
+        )
+
+    user_text = _extract_last_user_text_from_messages(messages)
+    if not user_text:
+        return JSONResponse(
+            {
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "No user message found",
+                },
+            },
+            status_code=400,
+        )
+
+    ai_response, bridge_err, bridge_status = await _bridge_api_user_message(user_text)
+    if bridge_err:
+        return JSONResponse(
+            {
+                "type": "error",
+                "error": {"type": "api_error", "message": bridge_err},
+            },
+            status_code=bridge_status,
+        )
+    ai_response = ai_response or ""
+
+    msg_id = f"msg_{uuid.uuid4().hex[:24]}"
+    created = int(_time.time())
+    usage = {
+        "input_tokens": len(user_text) // 4,
+        "output_tokens": len(ai_response) // 4,
+    }
+
+    message_obj = {
+        "id": msg_id,
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": ai_response}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": usage,
+    }
+
+    if stream:
+
+        async def event_stream():
+            message_start = {
+                "type": "message_start",
+                "message": {
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": model,
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {
+                        "input_tokens": usage["input_tokens"],
+                        "output_tokens": 0,
+                    },
+                },
+            }
+            yield f"event: message_start\ndata: {json.dumps(message_start, ensure_ascii=False)}\n\n"
+
+            content_block_start = {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            }
+            yield f"event: content_block_start\ndata: {json.dumps(content_block_start, ensure_ascii=False)}\n\n"
+
+            content_block_delta = {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": ai_response},
+            }
+            yield f"event: content_block_delta\ndata: {json.dumps(content_block_delta, ensure_ascii=False)}\n\n"
+
+            content_block_stop = {"type": "content_block_stop", "index": 0}
+            yield f"event: content_block_stop\ndata: {json.dumps(content_block_stop, ensure_ascii=False)}\n\n"
+
+            message_delta = {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {"output_tokens": usage["output_tokens"]},
+            }
+            yield f"event: message_delta\ndata: {json.dumps(message_delta, ensure_ascii=False)}\n\n"
+
+            message_stop = {"type": "message_stop"}
+            yield f"event: message_stop\ndata: {json.dumps(message_stop, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return JSONResponse(message_obj)
+
+
 @mcp.custom_route("/v1/models", methods=["GET"])
 async def api_models(request):
     """OpenAI-compatible models listing."""
@@ -1355,5 +1534,6 @@ if __name__ == "__main__":
     _ensure_ws()
     print(f"[MCP Chat] API endpoint: {URL}/v1/chat/completions", file=sys.stderr)
     print(f"[MCP Chat] Responses endpoint: {URL}/v1/responses", file=sys.stderr)
+    print(f"[MCP Chat] Anthropic endpoint: {URL}/v1/messages", file=sys.stderr)
     print(f"[MCP Chat] Models endpoint: {URL}/v1/models", file=sys.stderr)
     mcp.run(transport="streamable-http")
