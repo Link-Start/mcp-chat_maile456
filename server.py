@@ -1283,50 +1283,108 @@ async def api_responses(request):
 
     usage = {
         "input_tokens": len(user_text) // 4,
+        "input_tokens_details": {"cached_tokens": 0},
         "output_tokens": len(ai_response) // 4,
+        "output_tokens_details": {"reasoning_tokens": 0},
         "total_tokens": (len(user_text) + len(ai_response)) // 4,
+    }
+
+    output_item = {
+        "id": output_message_id,
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": ai_response, "annotations": []}],
     }
 
     response_obj = {
         "id": response_id,
         "object": "response",
+        "type": "response",
         "created_at": created,
         "status": "completed",
         "error": None,
+        "incomplete_details": None,
         "model": model,
-        "output": [
-            {
-                "id": output_message_id,
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [
-                    {"type": "output_text", "text": ai_response, "annotations": []}
-                ],
-            }
-        ],
+        "output": [output_item],
+        "parallel_tool_calls": False,
+        "tool_choice": "none",
+        "tools": [],
+        "temperature": 1,
+        "top_p": 1,
+        "max_output_tokens": body.get("max_output_tokens"),
+        "metadata": (
+            body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        ),
         "usage": usage,
         "output_text": ai_response,
+        # Compatibility fallback for clients that still read chat-completions-style fields.
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": ai_response},
+                "finish_reason": "stop",
+            }
+        ],
     }
 
     if stream:
 
         async def event_stream():
+            in_progress_response = {
+                "id": response_id,
+                "object": "response",
+                "type": "response",
+                "created_at": created,
+                "status": "in_progress",
+                "error": None,
+                "incomplete_details": None,
+                "model": model,
+                "output": [],
+            }
+
             created_evt = {
                 "type": "response.created",
-                "response": {
-                    "id": response_id,
-                    "object": "response",
-                    "created_at": created,
-                    "status": "in_progress",
-                    "model": model,
-                },
+                "response": in_progress_response,
             }
             yield f"event: response.created\ndata: {json.dumps(created_evt, ensure_ascii=False)}\n\n"
+
+            in_progress_evt = {
+                "type": "response.in_progress",
+                "response": in_progress_response,
+            }
+            yield f"event: response.in_progress\ndata: {json.dumps(in_progress_evt, ensure_ascii=False)}\n\n"
+
+            output_item_added = {
+                "type": "response.output_item.added",
+                "response_id": response_id,
+                "output_index": 0,
+                "item": {
+                    "id": output_message_id,
+                    "type": "message",
+                    "status": "in_progress",
+                    "role": "assistant",
+                    "content": [],
+                },
+            }
+            yield f"event: response.output_item.added\ndata: {json.dumps(output_item_added, ensure_ascii=False)}\n\n"
+
+            content_part_added = {
+                "type": "response.content_part.added",
+                "response_id": response_id,
+                "output_index": 0,
+                "item_id": output_message_id,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": []},
+            }
+            yield f"event: response.content_part.added\ndata: {json.dumps(content_part_added, ensure_ascii=False)}\n\n"
 
             delta_evt = {
                 "type": "response.output_text.delta",
                 "response_id": response_id,
+                "output_index": 0,
+                "item_id": output_message_id,
+                "content_index": 0,
                 "delta": ai_response,
             }
             yield f"event: response.output_text.delta\ndata: {json.dumps(delta_evt, ensure_ascii=False)}\n\n"
@@ -1334,9 +1392,34 @@ async def api_responses(request):
             done_evt = {
                 "type": "response.output_text.done",
                 "response_id": response_id,
+                "output_index": 0,
+                "item_id": output_message_id,
+                "content_index": 0,
                 "text": ai_response,
             }
             yield f"event: response.output_text.done\ndata: {json.dumps(done_evt, ensure_ascii=False)}\n\n"
+
+            content_part_done = {
+                "type": "response.content_part.done",
+                "response_id": response_id,
+                "output_index": 0,
+                "item_id": output_message_id,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": ai_response,
+                    "annotations": [],
+                },
+            }
+            yield f"event: response.content_part.done\ndata: {json.dumps(content_part_done, ensure_ascii=False)}\n\n"
+
+            output_item_done = {
+                "type": "response.output_item.done",
+                "response_id": response_id,
+                "output_index": 0,
+                "item": output_item,
+            }
+            yield f"event: response.output_item.done\ndata: {json.dumps(output_item_done, ensure_ascii=False)}\n\n"
 
             completed_evt = {
                 "type": "response.completed",
@@ -1427,6 +1510,8 @@ async def api_anthropic_messages(request):
     created = int(_time.time())
     usage = {
         "input_tokens": len(user_text) // 4,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
         "output_tokens": len(ai_response) // 4,
     }
 
@@ -1439,6 +1524,9 @@ async def api_anthropic_messages(request):
         "stop_reason": "end_turn",
         "stop_sequence": None,
         "usage": usage,
+        # Compatibility fallback fields for clients that read plain text shortcuts.
+        "output_text": ai_response,
+        "completion": ai_response,
     }
 
     if stream:
@@ -1456,6 +1544,8 @@ async def api_anthropic_messages(request):
                     "stop_sequence": None,
                     "usage": {
                         "input_tokens": usage["input_tokens"],
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
                         "output_tokens": 0,
                     },
                 },
