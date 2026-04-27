@@ -62,6 +62,7 @@ def _new_session(
         "_api_waiting": False,
         "_api_response_evt": threading.Event(),
         "_api_response": "",
+        "_api_trace": None,
     }
 
 
@@ -781,12 +782,22 @@ async def chat(
     if session:
         # Check if there's an API client waiting for this response
         if session.get("_api_waiting") and ai_message:
+            trace = session.get("_api_trace")
+            if isinstance(trace, dict):
+                _trace_add_step(trace, "ai_response_captured")
+                session["_api_trace"] = trace
             session["_api_response"] = ai_message
             session["_api_response_evt"].set()
             # Still record in history but don't show in Web UI as waiting
-            session["history"].append(
-                {"role": "ai", "content": ai_message, "ts": time.time(), "model": model}
-            )
+            entry = {
+                "role": "ai",
+                "content": ai_message,
+                "ts": time.time(),
+                "model": model,
+            }
+            if isinstance(trace, dict):
+                entry["trace"] = trace
+            session["history"].append(entry)
 
         # Reuse: append AI message to existing session
         sid = session["sid"]
@@ -930,11 +941,14 @@ def _check_api_key(request) -> str | None:
 
 async def _bridge_api_user_message(
     user_message: str,
-) -> tuple[str | None, str | None, int]:
+) -> tuple[str | None, dict, str | None, int]:
     """Send a user message to an active IDE listener and wait for AI response.
 
-    Returns (ai_response, error_message, status_code).
+    Returns (ai_response, trace, error_message, status_code).
     """
+    trace = _new_trace(user_message)
+    _trace_add_step(trace, "request_received")
+
     # Find an active session that's waiting for user input
     target_session = None
     with _lock:
@@ -944,8 +958,11 @@ async def _bridge_api_user_message(
                 break
 
     if not target_session:
+        _trace_add_step(trace, "no_active_session")
+        _trace_finalize(trace, status="no_session")
         return (
             None,
+            trace,
             (
                 "No active IDE session. Make sure Windsurf IDE is running and the AI is "
                 "calling chat() (e.g. tell the AI: '调用mcp-chat')"
@@ -954,11 +971,14 @@ async def _bridge_api_user_message(
         )
 
     sid = target_session["sid"]
+    _trace_add_step(trace, "session_matched", detail=sid)
+    target_session["_api_trace"] = trace
 
     # Prepare API response capture
     target_session["_api_waiting"] = True
     target_session["_api_response"] = ""
     target_session["_api_response_evt"] = threading.Event()
+    _trace_add_step(trace, "message_dispatched")
 
     # Submit the user message (same as Web UI submit)
     target_session["user_msg"] = user_message
@@ -971,6 +991,7 @@ async def _bridge_api_user_message(
     target_session["evt"].set()
     _signal_change()
     _broadcast_state(sid)
+    _trace_add_step(trace, "waiting_for_ai")
 
     # Wait for the AI to call chat() again with its response
     timeout = 300  # 5 minutes max
@@ -982,13 +1003,21 @@ async def _bridge_api_user_message(
     target_session["_api_waiting"] = False
 
     if not responded or not ai_response:
+        _trace_add_step(trace, "timeout")
+        _trace_finalize(trace, status="timeout")
+        target_session["_api_trace"] = trace
         return (
             None,
+            trace,
             "Timeout waiting for AI response. The IDE AI may not be responding.",
             504,
         )
 
-    return ai_response, None, 200
+    _trace_add_step(trace, "bridge_returned")
+    _trace_finalize(trace, status="completed", ai_response=ai_response)
+    target_session["_api_trace"] = trace
+
+    return ai_response, trace, None, 200
 
 
 def _extract_user_text_from_responses_input(body: dict) -> str:
@@ -1106,6 +1135,177 @@ def _extract_last_user_text_from_messages(
     return ""
 
 
+def _new_trace(user_message: str) -> dict:
+    now = time.time()
+    return {
+        "id": f"trace_{uuid.uuid4().hex[:12]}",
+        "started_at": now,
+        "finished_at": None,
+        "duration_ms": 0,
+        "status": "in_progress",
+        "reasoning_summary": "",
+        "steps": [],
+        "thought_steps": [],
+        "user_chars": len(user_message or ""),
+        "ai_chars": 0,
+    }
+
+
+def _trace_add_step(trace: dict, step: str, detail: str = "") -> None:
+    item = {"step": step, "ts": time.time()}
+    if detail:
+        item["detail"] = detail
+    trace.setdefault("steps", []).append(item)
+
+
+def _trace_step_ts(trace: dict, step: str) -> float:
+    for item in trace.get("steps", []):
+        if item.get("step") == step:
+            return float(item.get("ts", 0.0))
+    return 0.0
+
+
+def _build_reasoning_summary(ai_response: str) -> str:
+    """Build a concise, user-visible reasoning summary from assistant output.
+
+    This is an explainability summary, not an internal chain-of-thought dump.
+    """
+    if not ai_response:
+        return ""
+
+    lines = []
+    in_code = False
+    for line in ai_response.splitlines():
+        text = line.strip()
+        if text.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code or not text:
+            continue
+        if text.startswith("- ") or text.startswith("* "):
+            text = text[2:].strip()
+        lines.append(text)
+
+    cleaned = " ".join(lines)
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return ""
+
+    sentences = []
+    buff = []
+    for ch in cleaned:
+        buff.append(ch)
+        if ch in ".!?。！？；;":
+            sentence = "".join(buff).strip()
+            if sentence:
+                sentences.append(sentence)
+            buff = []
+            if len(sentences) >= 2:
+                break
+    if len(sentences) < 2 and buff:
+        sentence = "".join(buff).strip()
+        if sentence:
+            sentences.append(sentence)
+
+    summary = " ".join(sentences).strip() or cleaned
+    if len(summary) > 220:
+        summary = summary[:220].rstrip() + "..."
+    return summary
+
+
+def _build_thought_steps(trace: dict, summary: str) -> list[dict]:
+    start = float(trace.get("started_at", time.time()))
+    end = float(trace.get("finished_at", start))
+    if end < start:
+        end = start
+    duration = end - start
+
+    t1 = start + duration * 0.15
+    t2 = start + duration * 0.55
+    t3 = end
+
+    user_chars = int(trace.get("user_chars", 0))
+    ai_chars = int(trace.get("ai_chars", 0))
+    summary_hint = summary[:90] + ("..." if len(summary) > 90 else "")
+
+    return [
+        {
+            "step": "understand_task",
+            "label": "理解问题",
+            "ts": t1,
+            "detail": f"读取用户输入（{user_chars} 字符）。",
+        },
+        {
+            "step": "plan_solution",
+            "label": "组织思路",
+            "ts": t2,
+            "detail": summary_hint or "结合上下文整理可执行思路。",
+        },
+        {
+            "step": "compose_answer",
+            "label": "生成回答",
+            "ts": t3,
+            "detail": f"输出结果（约 {ai_chars} 字符）。",
+        },
+    ]
+
+
+def _trace_finalize(trace: dict, status: str, ai_response: str = "") -> None:
+    end = time.time()
+    start = float(trace.get("started_at", end))
+    trace["finished_at"] = end
+    trace["duration_ms"] = max(0, int((end - start) * 1000))
+    trace["status"] = status
+    trace["ai_chars"] = len(ai_response or "")
+
+    wait_start = _trace_step_ts(trace, "waiting_for_ai")
+    wait_end = _trace_step_ts(trace, "ai_response_captured") or _trace_step_ts(
+        trace, "bridge_returned"
+    )
+    wait_ms = (
+        max(0, int((wait_end - wait_start) * 1000))
+        if wait_start and wait_end and wait_end >= wait_start
+        else 0
+    )
+
+    if status == "completed":
+        summary = _build_reasoning_summary(ai_response)
+        trace["reasoning_summary"] = (
+            summary
+            or f"完成回答生成，总耗时 {trace.get('duration_ms', 0)}ms，等待响应 {wait_ms}ms。"
+        )
+        trace["thought_steps"] = _build_thought_steps(trace, trace["reasoning_summary"])
+    elif status == "timeout":
+        trace["reasoning_summary"] = "已接收问题并尝试生成回答，但等待响应超时。"
+        trace["thought_steps"] = [
+            {
+                "step": "understand_task",
+                "label": "理解问题",
+                "ts": trace.get("started_at", end),
+                "detail": f"读取用户输入（{trace.get('user_chars', 0)} 字符）。",
+            },
+            {
+                "step": "wait_timeout",
+                "label": "等待超时",
+                "ts": end,
+                "detail": "当前没有在时限内收到 IDE 助手回复。",
+            },
+        ]
+    elif status == "no_session":
+        trace["reasoning_summary"] = "当前没有活跃的 IDE 会话在监听，无法生成回复。"
+        trace["thought_steps"] = [
+            {
+                "step": "no_active_session",
+                "label": "无活跃会话",
+                "ts": end,
+                "detail": "请先让 IDE 端进入 chat() 等待状态。",
+            }
+        ]
+    else:
+        trace["reasoning_summary"] = "请求已完成。"
+        trace["thought_steps"] = []
+
+
 @mcp.custom_route("/v1/chat/completions", methods=["POST"])
 async def api_chat_completions(request):
     """OpenAI-compatible Chat Completions endpoint.
@@ -1160,7 +1360,7 @@ async def api_chat_completions(request):
             status_code=400,
         )
 
-    ai_response, bridge_err, bridge_status = await _bridge_api_user_message(
+    ai_response, trace, bridge_err, bridge_status = await _bridge_api_user_message(
         last_user_msg
     )
     if bridge_err:
@@ -1183,6 +1383,11 @@ async def api_chat_completions(request):
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
+                "mcp_trace": {
+                    "status": "in_progress",
+                    "reasoning_summary": trace.get("reasoning_summary", ""),
+                    "steps": trace.get("steps", []),
+                },
                 "choices": [
                     {
                         "index": 0,
@@ -1198,6 +1403,7 @@ async def api_chat_completions(request):
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
+                "mcp_trace": trace,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
             yield f"data: {json.dumps(done_chunk)}\n\n"
@@ -1219,7 +1425,11 @@ async def api_chat_completions(request):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": ai_response},
+                    "message": {
+                        "role": "assistant",
+                        "content": ai_response,
+                        "reasoning_summary": trace.get("reasoning_summary", ""),
+                    },
                     "finish_reason": "stop",
                 }
             ],
@@ -1228,6 +1438,8 @@ async def api_chat_completions(request):
                 "completion_tokens": len(ai_response) // 4,
                 "total_tokens": (len(last_user_msg) + len(ai_response)) // 4,
             },
+            "trace": trace,
+            "reasoning_summary": trace.get("reasoning_summary", ""),
         }
     )
 
@@ -1269,7 +1481,9 @@ async def api_responses(request):
             status_code=400,
         )
 
-    ai_response, bridge_err, bridge_status = await _bridge_api_user_message(user_text)
+    ai_response, trace, bridge_err, bridge_status = await _bridge_api_user_message(
+        user_text
+    )
     if bridge_err:
         return JSONResponse(
             {"error": {"message": bridge_err, "type": "server_error"}},
@@ -1318,6 +1532,8 @@ async def api_responses(request):
         ),
         "usage": usage,
         "output_text": ai_response,
+        "trace": trace,
+        "reasoning_summary": trace.get("reasoning_summary", ""),
         # Compatibility fallback for clients that still read chat-completions-style fields.
         "choices": [
             {
@@ -1421,6 +1637,13 @@ async def api_responses(request):
             }
             yield f"event: response.output_item.done\ndata: {json.dumps(output_item_done, ensure_ascii=False)}\n\n"
 
+            trace_evt = {
+                "type": "response.trace",
+                "response_id": response_id,
+                "trace": trace,
+            }
+            yield f"event: response.trace\ndata: {json.dumps(trace_evt, ensure_ascii=False)}\n\n"
+
             completed_evt = {
                 "type": "response.completed",
                 "response": response_obj,
@@ -1495,7 +1718,9 @@ async def api_anthropic_messages(request):
             status_code=400,
         )
 
-    ai_response, bridge_err, bridge_status = await _bridge_api_user_message(user_text)
+    ai_response, trace, bridge_err, bridge_status = await _bridge_api_user_message(
+        user_text
+    )
     if bridge_err:
         return JSONResponse(
             {
@@ -1524,6 +1749,8 @@ async def api_anthropic_messages(request):
         "stop_reason": "end_turn",
         "stop_sequence": None,
         "usage": usage,
+        "trace": trace,
+        "reasoning_summary": trace.get("reasoning_summary", ""),
         # Compatibility fallback fields for clients that read plain text shortcuts.
         "output_text": ai_response,
         "completion": ai_response,
@@ -1575,6 +1802,9 @@ async def api_anthropic_messages(request):
                 "usage": {"output_tokens": usage["output_tokens"]},
             }
             yield f"event: message_delta\ndata: {json.dumps(message_delta, ensure_ascii=False)}\n\n"
+
+            trace_evt = {"type": "mcp_trace", "trace": trace}
+            yield f"event: mcp_trace\ndata: {json.dumps(trace_evt, ensure_ascii=False)}\n\n"
 
             message_stop = {"type": "message_stop"}
             yield f"event: message_stop\ndata: {json.dumps(message_stop, ensure_ascii=False)}\n\n"
