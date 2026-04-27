@@ -10,29 +10,39 @@ WS_PORT = 8081
 URL = f"http://127.0.0.1:{PORT}"
 
 # Support both normal Python and PyInstaller frozen exe
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     _BASE = Path(sys._MEIPASS)
 else:
     _BASE = Path(__file__).resolve().parent
 WEB_DIST = _BASE / "web-ui" / "dist"
 
-mcp = FastMCP("mymcp", host="127.0.0.1", port=PORT, streamable_http_path="/mcp", stateless_http=True)
+mcp = FastMCP(
+    "mymcp",
+    host="127.0.0.1",
+    port=PORT,
+    streamable_http_path="/mcp",
+    stateless_http=True,
+)
 
 # ---------------------------------------------------------------------------
 # Multi-session state (single process — all IDEs connect here)
 # ---------------------------------------------------------------------------
-_sessions: dict[str, dict] = {}   # sid -> session dict
+_sessions: dict[str, dict] = {}  # sid -> session dict
 _lock = threading.Lock()
-_version = 0                      # global change counter
-_change_evt = threading.Event()   # signalled on any state change
+_version = 0  # global change counter
+_change_evt = threading.Event()  # signalled on any state change
 _ws_started = False
 _last_access = 0.0
 
 
-def _new_session(ai_msg: str = "", source: str = "", project: str = "", model: str = "") -> dict:
+def _new_session(
+    ai_msg: str = "", source: str = "", project: str = "", model: str = ""
+) -> dict:
     history = []
     if ai_msg:
-        history.append({"role": "ai", "content": ai_msg, "ts": time.time(), "model": model})
+        history.append(
+            {"role": "ai", "content": ai_msg, "ts": time.time(), "model": model}
+        )
     return {
         "sid": uuid.uuid4().hex[:8],
         "ai_msg": ai_msg,
@@ -78,19 +88,25 @@ def _sessions_list() -> dict:
         items = []
         active_sid = ""
         for s in _sessions.values():
-            items.append({
-                "sid": s["sid"],
-                "phase": s["phase"],
-                "msg_id": s["msg_id"],
-                "preview": (s["history"][0]["content"][:80] if s.get("history") else (s["ai_msg"] or "")[:80]),
-                "msg_count": len(s.get("history", [])),
-                "created": s["created"],
-                "updated": s["updated"],
-                "source": s["source"],
-                "project": s["project"],
-                "model": s.get("model", ""),
-                "alive": bool(s.get("_listener")) or s["phase"] == "waiting_for_ai",
-            })
+            items.append(
+                {
+                    "sid": s["sid"],
+                    "phase": s["phase"],
+                    "msg_id": s["msg_id"],
+                    "preview": (
+                        s["history"][0]["content"][:80]
+                        if s.get("history")
+                        else (s["ai_msg"] or "")[:80]
+                    ),
+                    "msg_count": len(s.get("history", [])),
+                    "created": s["created"],
+                    "updated": s["updated"],
+                    "source": s["source"],
+                    "project": s["project"],
+                    "model": s.get("model", ""),
+                    "alive": bool(s.get("_listener")) or s["phase"] == "waiting_for_ai",
+                }
+            )
             if s["phase"] == "waiting_for_user" and not active_sid:
                 active_sid = s["sid"]
         if not active_sid and items:
@@ -107,6 +123,7 @@ _ws_loop: asyncio.AbstractEventLoop | None = None
 try:
     import websockets
     import websockets.asyncio.server as ws_server
+
     _HAS_WS = True
 except ImportError:
     _HAS_WS = False
@@ -135,13 +152,23 @@ async def _ws_handler(websocket):
                 with _lock:
                     s = _sessions.get(client_sid)
                 if s:
-                    await websocket.send(json.dumps(_session_state(s), ensure_ascii=False))
+                    await websocket.send(
+                        json.dumps(_session_state(s), ensure_ascii=False)
+                    )
                 else:
                     await websocket.send(json.dumps({"error": "no_session"}))
-                await websocket.send(json.dumps({"type": "sessions", **_sessions_list()}, ensure_ascii=False))
+                await websocket.send(
+                    json.dumps(
+                        {"type": "sessions", **_sessions_list()}, ensure_ascii=False
+                    )
+                )
 
             elif msg_type == "list_sessions":
-                await websocket.send(json.dumps({"type": "sessions", **_sessions_list()}, ensure_ascii=False))
+                await websocket.send(
+                    json.dumps(
+                        {"type": "sessions", **_sessions_list()}, ensure_ascii=False
+                    )
+                )
 
             elif msg_type == "submit":
                 sid = data.get("sid", "")
@@ -207,7 +234,7 @@ def _broadcast_state(sid: str):
     async def _push():
         dead = []
         for ws in list(_ws_clients):
-            ws_sid = getattr(ws, '_mcp_sid', '')
+            ws_sid = getattr(ws, "_mcp_sid", "")
             if ws_sid == sid:
                 try:
                     await ws.send(payload)
@@ -225,7 +252,9 @@ def _broadcast_state(sid: str):
 async def _ws_main():
     global _ws_loop
     _ws_loop = asyncio.get_running_loop()
-    async with ws_server.serve(_ws_handler, "127.0.0.1", WS_PORT, max_size=50 * 1024 * 1024):
+    async with ws_server.serve(
+        _ws_handler, "127.0.0.1", WS_PORT, max_size=50 * 1024 * 1024
+    ):
         await asyncio.Future()
 
 
@@ -258,10 +287,13 @@ def _guess_mime(path: str) -> str:
 @mcp.custom_route("/", methods=["GET"])
 async def serve_index(request):
     from starlette.responses import HTMLResponse, Response
+
     index = WEB_DIST / "index.html"
     if index.exists():
         return HTMLResponse(index.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>MCP Chat</h1><p>Frontend not built. Run <code>npm run build</code> in web-ui/</p>")
+    return HTMLResponse(
+        "<h1>MCP Chat</h1><p>Frontend not built. Run <code>npm run build</code> in web-ui/</p>"
+    )
 
 
 @mcp.custom_route("/chat", methods=["GET"])
@@ -277,6 +309,7 @@ async def serve_index_html(request):
 @mcp.custom_route("/assets/{path:path}", methods=["GET"])
 async def serve_assets(request):
     from starlette.responses import Response
+
     rel = request.path_params.get("path", "")
     fp = WEB_DIST / "assets" / rel
     if fp.exists() and fp.is_file():
@@ -287,6 +320,7 @@ async def serve_assets(request):
 @mcp.custom_route("/favicon.ico", methods=["GET"])
 async def serve_favicon(request):
     from starlette.responses import Response
+
     fp = WEB_DIST / "favicon.ico"
     if fp.exists():
         return Response(fp.read_bytes(), media_type="image/x-icon")
@@ -296,6 +330,7 @@ async def serve_favicon(request):
 @mcp.custom_route("/avatar.png", methods=["GET"])
 async def serve_avatar(request):
     from starlette.responses import Response
+
     fp = WEB_DIST / "avatar.png"
     if fp.exists():
         return Response(fp.read_bytes(), media_type="image/png")
@@ -305,6 +340,7 @@ async def serve_avatar(request):
 @mcp.custom_route("/user.jpg", methods=["GET"])
 async def serve_user_avatar(request):
     from starlette.responses import Response
+
     fp = WEB_DIST / "user.jpg"
     if fp.exists():
         return Response(fp.read_bytes(), media_type="image/jpeg")
@@ -316,6 +352,7 @@ async def api_poll(request):
     global _last_access
     _last_access = time.monotonic()
     from starlette.responses import JSONResponse, Response
+
     params = dict(request.query_params)
     sid = params.get("sid", "")
     v = int(params.get("v", "0"))
@@ -335,6 +372,7 @@ async def api_poll(request):
 @mcp.custom_route("/status", methods=["GET"])
 async def api_status(request):
     from starlette.responses import JSONResponse
+
     params = dict(request.query_params)
     sid = params.get("sid", "")
     with _lock:
@@ -349,6 +387,7 @@ async def api_submit(request):
     global _last_access
     _last_access = time.monotonic()
     from starlette.responses import JSONResponse
+
     data = await request.json()
     sid = data.get("sid", "")
     response = data.get("response", "")
@@ -377,18 +416,22 @@ async def api_submit(request):
 @mcp.custom_route("/history", methods=["GET"])
 async def api_history(request):
     from starlette.responses import JSONResponse
+
     params = dict(request.query_params)
     sid = params.get("sid", "")
     with _lock:
         s = _sessions.get(sid)
     if not s:
         return JSONResponse({"history": []})
-    return JSONResponse({"history": s.get("history", [])}, headers={"Cache-Control": "no-cache"})
+    return JSONResponse(
+        {"history": s.get("history", [])}, headers={"Cache-Control": "no-cache"}
+    )
 
 
 @mcp.custom_route("/delete", methods=["POST"])
 async def api_delete(request):
     from starlette.responses import JSONResponse
+
     data = await request.json()
     sid = data.get("sid", "")
     with _lock:
@@ -401,11 +444,15 @@ async def api_delete(request):
 @mcp.custom_route("/delete-project", methods=["POST"])
 async def api_delete_project(request):
     from starlette.responses import JSONResponse
+
     data = await request.json()
     project = data.get("project", "")
     with _lock:
-        to_remove = [sid for sid, s in _sessions.items()
-                     if (s["project"] or "(default)") == project]
+        to_remove = [
+            sid
+            for sid, s in _sessions.items()
+            if (s["project"] or "(default)") == project
+        ]
         for sid in to_remove:
             _sessions.pop(sid, None)
     if to_remove:
@@ -416,7 +463,7 @@ async def api_delete_project(request):
 # ---------------------------------------------------------------------------
 # Vault / File-system API (Obsidian-style notes)
 # ---------------------------------------------------------------------------
-VAULT_ROOT: Path | None = None          # Set via /vault/config
+VAULT_ROOT: Path | None = None  # Set via /vault/config
 VAULT_EXTS = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".log"}
 
 
@@ -442,6 +489,7 @@ def _safe_path(root: Path, rel: str) -> Path | None:
 async def vault_config(request):
     global VAULT_ROOT
     from starlette.responses import JSONResponse
+
     if request.method == "POST":
         body = await request.json()
         vp = body.get("path", "")
@@ -456,6 +504,7 @@ async def vault_config(request):
 @mcp.custom_route("/vault/tree", methods=["GET"])
 async def vault_tree(request):
     from starlette.responses import JSONResponse
+
     root = _vault_root()
     if not root:
         return JSONResponse({"error": "vault not configured"}, status_code=400)
@@ -466,15 +515,27 @@ async def vault_tree(request):
 
     items = []
     try:
-        for entry in sorted(base.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+        for entry in sorted(
+            base.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+        ):
             if entry.name.startswith("."):
                 continue
             if entry.is_dir():
-                child_count = sum(1 for c in entry.iterdir() if not c.name.startswith("."))
-                items.append({"name": entry.name, "type": "dir", "children": child_count})
+                child_count = sum(
+                    1 for c in entry.iterdir() if not c.name.startswith(".")
+                )
+                items.append(
+                    {"name": entry.name, "type": "dir", "children": child_count}
+                )
             elif entry.suffix.lower() in VAULT_EXTS:
-                items.append({"name": entry.name, "type": "file", "size": entry.stat().st_size,
-                              "mtime": entry.stat().st_mtime})
+                items.append(
+                    {
+                        "name": entry.name,
+                        "type": "file",
+                        "size": entry.stat().st_size,
+                        "mtime": entry.stat().st_mtime,
+                    }
+                )
     except PermissionError:
         pass
     return JSONResponse(items)
@@ -483,6 +544,7 @@ async def vault_tree(request):
 @mcp.custom_route("/vault/read", methods=["GET"])
 async def vault_read(request):
     from starlette.responses import JSONResponse, PlainTextResponse
+
     root = _vault_root()
     if not root:
         return JSONResponse({"error": "vault not configured"}, status_code=400)
@@ -499,6 +561,7 @@ async def vault_read(request):
 @mcp.custom_route("/vault/write", methods=["POST"])
 async def vault_write(request):
     from starlette.responses import JSONResponse
+
     root = _vault_root()
     if not root:
         return JSONResponse({"error": "vault not configured"}, status_code=400)
@@ -519,6 +582,7 @@ async def vault_write(request):
 @mcp.custom_route("/vault/mkdir", methods=["POST"])
 async def vault_mkdir(request):
     from starlette.responses import JSONResponse
+
     root = _vault_root()
     if not root:
         return JSONResponse({"error": "vault not configured"}, status_code=400)
@@ -537,6 +601,7 @@ async def vault_mkdir(request):
 @mcp.custom_route("/vault/delete", methods=["POST"])
 async def vault_delete(request):
     from starlette.responses import JSONResponse
+
     root = _vault_root()
     if not root:
         return JSONResponse({"error": "vault not configured"}, status_code=400)
@@ -550,6 +615,7 @@ async def vault_delete(request):
             fp.unlink()
         elif fp.is_dir():
             import shutil
+
             shutil.rmtree(fp)
         return JSONResponse({"ok": True})
     except Exception as e:
@@ -559,6 +625,7 @@ async def vault_delete(request):
 @mcp.custom_route("/vault/rename", methods=["POST"])
 async def vault_rename(request):
     from starlette.responses import JSONResponse
+
     root = _vault_root()
     if not root:
         return JSONResponse({"error": "vault not configured"}, status_code=400)
@@ -578,6 +645,7 @@ async def vault_rename(request):
 @mcp.custom_route("/vault/search", methods=["GET"])
 async def vault_search(request):
     from starlette.responses import JSONResponse
+
     root = _vault_root()
     if not root:
         return JSONResponse({"error": "vault not configured"}, status_code=400)
@@ -613,8 +681,8 @@ async def vault_search(request):
 # ---------------------------------------------------------------------------
 # Stale session auto-cleanup (listener-based)
 # ---------------------------------------------------------------------------
-CLEANUP_INTERVAL = 600    # check every 10 minutes
-STALE_THRESHOLD = 3600    # only remove sessions idle for > 1 hour
+CLEANUP_INTERVAL = 600  # check every 10 minutes
+STALE_THRESHOLD = 3600  # only remove sessions idle for > 1 hour
 
 
 def _cleanup_stale() -> list[str]:
@@ -624,7 +692,11 @@ def _cleanup_stale() -> list[str]:
     with _lock:
         for sid in list(_sessions):
             s = _sessions[sid]
-            if not s.get("_listener") and s["phase"] == "idle" and (now - s["updated"] > STALE_THRESHOLD):
+            if (
+                not s.get("_listener")
+                and s["phase"] == "idle"
+                and (now - s["updated"] > STALE_THRESHOLD)
+            ):
                 _sessions.pop(sid)
                 removed.append(sid)
     if removed:
@@ -638,7 +710,10 @@ def _cleanup_loop():
         try:
             removed = _cleanup_stale()
             if removed:
-                print(f"[MCP Chat] Auto-cleanup: removed {len(removed)} stale session(s)", file=sys.stderr)
+                print(
+                    f"[MCP Chat] Auto-cleanup: removed {len(removed)} stale session(s)",
+                    file=sys.stderr,
+                )
         except Exception as e:
             print(f"[MCP Chat] Cleanup error: {e}", file=sys.stderr)
 
@@ -649,6 +724,7 @@ threading.Thread(target=_cleanup_loop, daemon=True).start()
 @mcp.custom_route("/cleanup", methods=["POST"])
 async def api_cleanup(request):
     from starlette.responses import JSONResponse
+
     removed = _cleanup_stale()
     return JSONResponse({"ok": True, "removed": len(removed), "sids": removed})
 
@@ -672,7 +748,9 @@ def get_prompt() -> str:
 
 
 @mcp.tool()
-async def chat(ai_message: str, model: str = "", source: str = "", project: str = "") -> str:
+async def chat(
+    ai_message: str, model: str = "", source: str = "", project: str = ""
+) -> str:
     """Chat with the user via Web UI.
 
     Args:
@@ -683,13 +761,20 @@ async def chat(ai_message: str, model: str = "", source: str = "", project: str 
     """
     # Log parameters for debugging
     import logging
-    logging.info(f"chat() called: model={model!r}, source={source!r}, project={project!r}")
+
+    logging.info(
+        f"chat() called: model={model!r}, source={source!r}, project={project!r}"
+    )
 
     # Try to reuse an existing idle session from the same source+project
     session = None
     with _lock:
         for s in _sessions.values():
-            if s["phase"] == "idle" and s["source"] == source and s["project"] == project:
+            if (
+                s["phase"] == "idle"
+                and s["source"] == source
+                and s["project"] == project
+            ):
                 session = s
                 break
 
@@ -699,14 +784,18 @@ async def chat(ai_message: str, model: str = "", source: str = "", project: str 
             session["_api_response"] = ai_message
             session["_api_response_evt"].set()
             # Still record in history but don't show in Web UI as waiting
-            session["history"].append({"role": "ai", "content": ai_message, "ts": time.time(), "model": model})
+            session["history"].append(
+                {"role": "ai", "content": ai_message, "ts": time.time(), "model": model}
+            )
 
         # Reuse: append AI message to existing session
         sid = session["sid"]
         session["ai_msg"] = ai_message
         session["user_msg"] = ""
         if not session.get("_api_waiting"):
-            session["history"].append({"role": "ai", "content": ai_message, "ts": time.time(), "model": model})
+            session["history"].append(
+                {"role": "ai", "content": ai_message, "ts": time.time(), "model": model}
+            )
         session["evt"] = threading.Event()  # fresh event for this round
         session["phase"] = "waiting_for_user"
         session["msg_id"] += 1
@@ -739,12 +828,15 @@ async def chat(ai_message: str, model: str = "", source: str = "", project: str 
             )
         except Exception:
             import webbrowser
+
             webbrowser.open(URL)
 
     # Wait for user response
     session["_listener"] = True
     try:
-        await asyncio.get_running_loop().run_in_executor(None, session["evt"].wait, 259200)
+        await asyncio.get_running_loop().run_in_executor(
+            None, session["evt"].wait, 259200
+        )
     finally:
         session["_listener"] = False
 
@@ -761,6 +853,7 @@ async def chat(ai_message: str, model: str = "", source: str = "", project: str 
     image_note = ""
     if user_images:
         import base64, tempfile
+
         saved_paths = []
         for i, img_data in enumerate(user_images):
             if isinstance(img_data, str) and img_data.startswith("data:"):
@@ -768,7 +861,9 @@ async def chat(ai_message: str, model: str = "", source: str = "", project: str 
                     header, b64 = img_data.split(",", 1)
                     mime = header.split(":")[1].split(";")[0]
                     ext = mime.split("/")[-1].replace("jpeg", "jpg")
-                    tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", prefix="mcp_img_", delete=False)
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=f".{ext}", prefix="mcp_img_", delete=False
+                    )
                     tmp.write(base64.b64decode(b64))
                     tmp.close()
                     saved_paths.append(tmp.name)
@@ -781,13 +876,19 @@ async def chat(ai_message: str, model: str = "", source: str = "", project: str 
                 f"\n[用户附带了 {len(saved_paths)} 张图片，已保存到以下路径，请用 read_file 工具查看:]\n"
                 f"{paths_str}\n"
             )
+
             # Schedule cleanup after 5 minutes
             def _cleanup(paths):
                 time.sleep(300)
                 for p in paths:
-                    try: os.unlink(p)
-                    except Exception: pass
-            threading.Thread(target=_cleanup, args=(saved_paths[:],), daemon=True).start()
+                    try:
+                        os.unlink(p)
+                    except Exception:
+                        pass
+
+            threading.Thread(
+                target=_cleanup, args=(saved_paths[:],), daemon=True
+            ).start()
         print(f"[MCP Chat] User attached {len(user_images)} image(s)", file=sys.stderr)
 
     text_reply = (
@@ -827,47 +928,13 @@ def _check_api_key(request) -> str | None:
     return None
 
 
-@mcp.custom_route("/v1/chat/completions", methods=["POST"])
-async def api_chat_completions(request):
-    """OpenAI-compatible Chat Completions endpoint.
-    Bridges external requests to the Windsurf IDE via MCP chat() flow.
-    Requires an active IDE session with a listening AI.
+async def _bridge_api_user_message(
+    user_message: str,
+) -> tuple[str | None, str | None, int]:
+    """Send a user message to an active IDE listener and wait for AI response.
+
+    Returns (ai_response, error_message, status_code).
     """
-    from starlette.responses import JSONResponse, StreamingResponse
-    import time as _time
-
-    # Auth check
-    err = _check_api_key(request)
-    if err:
-        return JSONResponse({"error": {"message": err, "type": "authentication_error"}}, status_code=401)
-
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": {"message": "Invalid JSON", "type": "invalid_request_error"}}, status_code=400)
-
-    messages = body.get("messages", [])
-    model = body.get("model", "cascade")
-    stream = body.get("stream", False)
-    max_tokens = body.get("max_tokens", 4096)
-
-    if not messages:
-        return JSONResponse({"error": {"message": "messages is required", "type": "invalid_request_error"}}, status_code=400)
-
-    # Extract the last user message
-    last_user_msg = ""
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            content = m.get("content", "")
-            if isinstance(content, list):
-                last_user_msg = " ".join(c.get("text", "") for c in content if c.get("type") == "text")
-            else:
-                last_user_msg = str(content)
-            break
-
-    if not last_user_msg:
-        return JSONResponse({"error": {"message": "No user message found", "type": "invalid_request_error"}}, status_code=400)
-
     # Find an active session that's waiting for user input
     target_session = None
     with _lock:
@@ -877,12 +944,14 @@ async def api_chat_completions(request):
                 break
 
     if not target_session:
-        return JSONResponse({
-            "error": {
-                "message": "No active IDE session. Make sure Windsurf IDE is running and the AI is calling chat() (e.g. tell the AI: '调用mcp-chat')",
-                "type": "server_error"
-            }
-        }, status_code=503)
+        return (
+            None,
+            (
+                "No active IDE session. Make sure Windsurf IDE is running and the AI is "
+                "calling chat() (e.g. tell the AI: '调用mcp-chat')"
+            ),
+            503,
+        )
 
     sid = target_session["sid"]
 
@@ -892,9 +961,11 @@ async def api_chat_completions(request):
     target_session["_api_response_evt"] = threading.Event()
 
     # Submit the user message (same as Web UI submit)
-    target_session["user_msg"] = last_user_msg
+    target_session["user_msg"] = user_message
     target_session["user_images"] = []
-    target_session["history"].append({"role": "user", "content": last_user_msg, "ts": time.time()})
+    target_session["history"].append(
+        {"role": "user", "content": user_message, "ts": time.time()}
+    )
     target_session["phase"] = "waiting_for_ai"
     target_session["updated"] = time.time()
     target_session["evt"].set()
@@ -911,12 +982,160 @@ async def api_chat_completions(request):
     target_session["_api_waiting"] = False
 
     if not responded or not ai_response:
-        return JSONResponse({
-            "error": {
-                "message": "Timeout waiting for AI response. The IDE AI may not be responding.",
-                "type": "server_error"
-            }
-        }, status_code=504)
+        return (
+            None,
+            "Timeout waiting for AI response. The IDE AI may not be responding.",
+            504,
+        )
+
+    return ai_response, None, 200
+
+
+def _extract_user_text_from_responses_input(body: dict) -> str:
+    """Best-effort extraction of user text from Responses API style input payload."""
+    user_text = ""
+
+    # OpenAI Responses API style: input can be string or message array.
+    input_field = body.get("input", "")
+    if isinstance(input_field, str):
+        return input_field.strip()
+
+    if isinstance(input_field, list):
+        for item in reversed(input_field):
+            if isinstance(item, str):
+                txt = item.strip()
+                if txt:
+                    return txt
+                continue
+            if not isinstance(item, dict):
+                continue
+
+            role = item.get("role", "")
+            content = item.get("content", "")
+            if role and role != "user":
+                continue
+
+            if isinstance(content, str):
+                txt = content.strip()
+                if txt:
+                    return txt
+            elif isinstance(content, list):
+                parts = []
+                for c in content:
+                    if isinstance(c, str):
+                        if c.strip():
+                            parts.append(c.strip())
+                        continue
+                    if not isinstance(c, dict):
+                        continue
+                    ctype = c.get("type", "")
+                    if ctype in ("input_text", "text"):
+                        t = c.get("text", "")
+                        if t:
+                            parts.append(str(t))
+                txt = " ".join(parts).strip()
+                if txt:
+                    return txt
+
+    # Compatibility fallback: accept chat-completions payload shape too.
+    messages = body.get("messages", [])
+    if isinstance(messages, list):
+        for m in reversed(messages):
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") != "user":
+                continue
+            content = m.get("content", "")
+            if isinstance(content, str):
+                txt = content.strip()
+                if txt:
+                    return txt
+            elif isinstance(content, list):
+                parts = []
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") in ("input_text", "text"):
+                        t = c.get("text", "")
+                        if t:
+                            parts.append(str(t))
+                txt = " ".join(parts).strip()
+                if txt:
+                    return txt
+
+    return user_text
+
+
+@mcp.custom_route("/v1/chat/completions", methods=["POST"])
+async def api_chat_completions(request):
+    """OpenAI-compatible Chat Completions endpoint.
+    Bridges external requests to the Windsurf IDE via MCP chat() flow.
+    Requires an active IDE session with a listening AI.
+    """
+    from starlette.responses import JSONResponse, StreamingResponse
+    import time as _time
+
+    # Auth check
+    err = _check_api_key(request)
+    if err:
+        return JSONResponse(
+            {"error": {"message": err, "type": "authentication_error"}}, status_code=401
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": {"message": "Invalid JSON", "type": "invalid_request_error"}},
+            status_code=400,
+        )
+
+    messages = body.get("messages", [])
+    model = body.get("model", "cascade")
+    stream = body.get("stream", False)
+    max_tokens = body.get("max_tokens", 4096)
+
+    if not messages:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "messages is required",
+                    "type": "invalid_request_error",
+                }
+            },
+            status_code=400,
+        )
+
+    # Extract the last user message
+    last_user_msg = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, list):
+                last_user_msg = " ".join(
+                    c.get("text", "") for c in content if c.get("type") == "text"
+                )
+            else:
+                last_user_msg = str(content)
+            break
+
+    if not last_user_msg:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "No user message found",
+                    "type": "invalid_request_error",
+                }
+            },
+            status_code=400,
+        )
+
+    ai_response, bridge_err, bridge_status = await _bridge_api_user_message(
+        last_user_msg
+    )
+    if bridge_err:
+        return JSONResponse(
+            {"error": {"message": bridge_err, "type": "server_error"}},
+            status_code=bridge_status,
+        )
 
     # Build OpenAI-compatible response
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
@@ -931,11 +1150,13 @@ async def api_chat_completions(request):
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": ai_response},
-                    "finish_reason": None
-                }]
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ai_response},
+                        "finish_reason": None,
+                    }
+                ],
             }
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             # Final chunk
@@ -944,49 +1165,195 @@ async def api_chat_completions(request):
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
             yield f"data: {json.dumps(done_chunk)}\n\n"
             yield "data: [DONE]\n\n"
 
-        return StreamingResponse(event_stream(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     # Non-streaming response
-    return JSONResponse({
-        "id": completion_id,
-        "object": "chat.completion",
-        "created": created,
-        "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": ai_response},
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": len(last_user_msg) // 4,
-            "completion_tokens": len(ai_response) // 4,
-            "total_tokens": (len(last_user_msg) + len(ai_response)) // 4
+    return JSONResponse(
+        {
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": ai_response},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": len(last_user_msg) // 4,
+                "completion_tokens": len(ai_response) // 4,
+                "total_tokens": (len(last_user_msg) + len(ai_response)) // 4,
+            },
         }
-    })
+    )
+
+
+@mcp.custom_route("/v1/responses", methods=["POST"])
+async def api_responses(request):
+    """OpenAI-compatible Responses endpoint.
+    Bridges external requests to the Windsurf IDE via MCP chat() flow.
+    """
+    from starlette.responses import JSONResponse, StreamingResponse
+    import time as _time
+
+    err = _check_api_key(request)
+    if err:
+        return JSONResponse(
+            {"error": {"message": err, "type": "authentication_error"}}, status_code=401
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": {"message": "Invalid JSON", "type": "invalid_request_error"}},
+            status_code=400,
+        )
+
+    model = body.get("model", "cascade")
+    stream = bool(body.get("stream", False))
+    user_text = _extract_user_text_from_responses_input(body)
+
+    if not user_text:
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "input is required (string or messages-like content with user text)",
+                    "type": "invalid_request_error",
+                }
+            },
+            status_code=400,
+        )
+
+    ai_response, bridge_err, bridge_status = await _bridge_api_user_message(user_text)
+    if bridge_err:
+        return JSONResponse(
+            {"error": {"message": bridge_err, "type": "server_error"}},
+            status_code=bridge_status,
+        )
+
+    created = int(_time.time())
+    response_id = f"resp_{uuid.uuid4().hex[:12]}"
+    output_message_id = f"msg_{uuid.uuid4().hex[:12]}"
+
+    usage = {
+        "input_tokens": len(user_text) // 4,
+        "output_tokens": len(ai_response) // 4,
+        "total_tokens": (len(user_text) + len(ai_response)) // 4,
+    }
+
+    response_obj = {
+        "id": response_id,
+        "object": "response",
+        "created_at": created,
+        "status": "completed",
+        "error": None,
+        "model": model,
+        "output": [
+            {
+                "id": output_message_id,
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": ai_response, "annotations": []}
+                ],
+            }
+        ],
+        "usage": usage,
+        "output_text": ai_response,
+    }
+
+    if stream:
+
+        async def event_stream():
+            created_evt = {
+                "type": "response.created",
+                "response": {
+                    "id": response_id,
+                    "object": "response",
+                    "created_at": created,
+                    "status": "in_progress",
+                    "model": model,
+                },
+            }
+            yield f"event: response.created\ndata: {json.dumps(created_evt, ensure_ascii=False)}\n\n"
+
+            delta_evt = {
+                "type": "response.output_text.delta",
+                "response_id": response_id,
+                "delta": ai_response,
+            }
+            yield f"event: response.output_text.delta\ndata: {json.dumps(delta_evt, ensure_ascii=False)}\n\n"
+
+            done_evt = {
+                "type": "response.output_text.done",
+                "response_id": response_id,
+                "text": ai_response,
+            }
+            yield f"event: response.output_text.done\ndata: {json.dumps(done_evt, ensure_ascii=False)}\n\n"
+
+            completed_evt = {
+                "type": "response.completed",
+                "response": response_obj,
+            }
+            yield f"event: response.completed\ndata: {json.dumps(completed_evt, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return JSONResponse(response_obj)
 
 
 @mcp.custom_route("/v1/models", methods=["GET"])
 async def api_models(request):
     """OpenAI-compatible models listing."""
     from starlette.responses import JSONResponse
-    return JSONResponse({
-        "object": "list",
-        "data": [
-            {"id": "cascade", "object": "model", "created": 1700000000, "owned_by": "windsurf"},
-            {"id": "claude-sonnet-4-20250514", "object": "model", "created": 1700000000, "owned_by": "windsurf"},
-            {"id": "gpt-4o", "object": "model", "created": 1700000000, "owned_by": "windsurf"},
-        ]
-    })
+
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": [
+                {
+                    "id": "cascade",
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "windsurf",
+                },
+                {
+                    "id": "claude-sonnet-4-20250514",
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "windsurf",
+                },
+                {
+                    "id": "gpt-4o",
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "windsurf",
+                },
+            ],
+        }
+    )
 
 
 if __name__ == "__main__":
     _ensure_ws()
     print(f"[MCP Chat] API endpoint: {URL}/v1/chat/completions", file=sys.stderr)
+    print(f"[MCP Chat] Responses endpoint: {URL}/v1/responses", file=sys.stderr)
     print(f"[MCP Chat] Models endpoint: {URL}/v1/models", file=sys.stderr)
     mcp.run(transport="streamable-http")
