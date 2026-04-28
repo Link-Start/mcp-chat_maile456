@@ -54,7 +54,7 @@ Your IDE (Windsurf / Cursor / Copilot / Claude Code)
         ↕ MCP Protocol
    ┌────────────────┐
    │   server.py    │--> Web UI (multi-session chat)
-   │  (MCP Gateway)  │--> OpenAI-compatible API (/v1/chat/completions)
+    │  (MCP Gateway)  │--> OpenAI / Anthropic-compatible API (/v1/chat/completions · /v1/responses · /v1/messages)
    │                │--> WebSocket real-time updates
    └────────────────┘
          ↕
@@ -86,7 +86,7 @@ Different IDEs have different billing models, so the effect varies:
 ### Features
 
 - **Web UI** — Chat with your IDE AI in the browser. Markdown rendering, syntax highlighting, image upload, multi-session management.
-- **OpenAI-compatible API** — Standard `/v1/chat/completions` endpoint with streaming support. Works with any OpenAI SDK client.
+- **OpenAI / Anthropic-compatible API** — Supports `/v1/chat/completions`, `/v1/responses`, and `/v1/messages` with streaming support. Works with OpenAI SDK and Anthropic SDK clients.
 - **Multi-IDE support** — Windsurf, Cursor, GitHub Copilot, Claude Code / Desktop can connect simultaneously with independent sessions.
 - **Zero-config startup** — Web UI is pre-built. Just install Python dependencies and run.
 - **Single-file backend** — The entire server is one `server.py`. Easy to understand and extend.
@@ -115,6 +115,8 @@ python server.py
 
 ```
 [MCP Chat] API endpoint: http://127.0.0.1:8080/v1/chat/completions
+[MCP Chat] Responses endpoint: http://127.0.0.1:8080/v1/responses
+[MCP Chat] Anthropic endpoint: http://127.0.0.1:8080/v1/messages
 [MCP Chat] Models endpoint: http://127.0.0.1:8080/v1/models
 INFO     Application startup complete.
 ```
@@ -124,6 +126,8 @@ INFO     Application startup complete.
 | http://127.0.0.1:8080 | Web UI |
 | http://127.0.0.1:8080/mcp | MCP endpoint (IDE connects here) |
 | http://127.0.0.1:8080/v1/chat/completions | OpenAI-compatible API |
+| http://127.0.0.1:8080/v1/responses | OpenAI Responses API |
+| http://127.0.0.1:8080/v1/messages | Anthropic Messages API |
 | ws://127.0.0.1:8081 | WebSocket real-time updates |
 
 ---
@@ -241,9 +245,9 @@ Open `http://127.0.0.1:8080` in your browser to start chatting.
 
 ---
 
-## OpenAI-compatible API
+## OpenAI / Anthropic-compatible API
 
-Once the AI enters the chat() loop in your IDE, you can interact with it via the standard OpenAI API.
+Once the AI enters the chat() loop in your IDE, you can interact with it via OpenAI-compatible and Anthropic-compatible APIs.
 
 ### curl
 
@@ -251,6 +255,16 @@ Once the AI enters the chat() loop in your IDE, you can interact with it via the
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"cascade","messages":[{"role":"user","content":"Hello"}]}'
+
+# OpenAI Responses
+curl http://127.0.0.1:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.3-codex","input":"Hello"}'
+
+# Anthropic Messages
+curl http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ### Python
@@ -337,6 +351,8 @@ mcp-chat/
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/v1/chat/completions` | OpenAI-compatible Chat API |
+| POST | `/v1/responses` | OpenAI-compatible Responses API |
+| POST | `/v1/messages` | Anthropic-compatible Messages API |
 | GET | `/v1/models` | Model list |
 | POST | `/mcp` | MCP Streamable HTTP endpoint |
 | GET | `/poll` | Long-polling state updates |
@@ -369,11 +385,11 @@ Other IDEs work too, but with limitations: Cursor throttles after quota, Windsur
 </details>
 
 <details>
-<summary><strong>How does the OpenAI API work?</strong></summary>
+<summary><strong>How do the OpenAI / Anthropic APIs work?</strong></summary>
 
-server.py has a built-in `/v1/chat/completions` endpoint. When an API request arrives, the server injects the message into the current chat() loop, waits for the AI to respond, and returns the result in OpenAI format. Both streaming (SSE) and non-streaming responses are supported.
+server.py has built-in `/v1/chat/completions`, `/v1/responses`, and `/v1/messages` endpoints. When an API request arrives, the server injects the message into the current chat() loop, waits for the AI to respond, and returns the result in the corresponding format. Both streaming (SSE) and non-streaming responses are supported.
 
-Essentially: **External API request → server forwards to IDE AI → AI responds → server wraps in OpenAI format and returns**.
+Essentially: **External API request → server forwards to IDE AI → AI responds → server wraps in OpenAI/Anthropic format and returns**.
 </details>
 
 <details>

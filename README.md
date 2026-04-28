@@ -51,7 +51,7 @@
         ↕ MCP 协议
    ┌────────────────┐
    │   server.py    │──> Web UI (多会话聊天界面)
-   │   (MCP 网关)   │──> OpenAI 兼容 API (/v1/chat/completions)
+    │   (MCP 网关)   │──> OpenAI / Anthropic 兼容 API (/v1/chat/completions · /v1/responses · /v1/messages)
    │                │──> WebSocket 实时推送
    └────────────────┘
          ↕
@@ -83,7 +83,7 @@ MCP Chat 通过 MCP 协议让 IDE 里的 AI 进入一个 **chat() 循环** — �
 ### 功能特性
 
 - **Web UI** — 浏览器里和 IDE AI 聊天，支持 Markdown 渲染、代码高亮、图片上传、多会话管理
-- **OpenAI 兼容 API** — 标准 `/v1/chat/completions` 接口，支持流式响应，任何 OpenAI SDK 兼容工具可直接对接
+- **OpenAI / Anthropic 兼容 API** — 支持 `/v1/chat/completions`、`/v1/responses`、`/v1/messages`，支持流式响应，可对接 OpenAI SDK 与 Anthropic SDK
 - **多 IDE 支持** — Windsurf、Cursor、GitHub Copilot、Claude Code / Desktop 同时连接，各自独立会话
 - **零配置启动** — Web UI 已预构建，安装依赖后直接运行
 - **单文件后端** — 整个服务端只有一个 `server.py`，无框架依赖，易于理解和二次开发
@@ -112,6 +112,8 @@ python server.py
 
 ```
 [MCP Chat] API endpoint: http://127.0.0.1:8080/v1/chat/completions
+[MCP Chat] Responses endpoint: http://127.0.0.1:8080/v1/responses
+[MCP Chat] Anthropic endpoint: http://127.0.0.1:8080/v1/messages
 [MCP Chat] Models endpoint: http://127.0.0.1:8080/v1/models
 INFO     Application startup complete.
 ```
@@ -121,6 +123,8 @@ INFO     Application startup complete.
 | http://127.0.0.1:8080 | Web UI 聊天界面 |
 | http://127.0.0.1:8080/mcp | MCP 端点（IDE 连这个） |
 | http://127.0.0.1:8080/v1/chat/completions | OpenAI 兼容 API |
+| http://127.0.0.1:8080/v1/responses | OpenAI Responses API |
+| http://127.0.0.1:8080/v1/messages | Anthropic Messages API |
 | ws://127.0.0.1:8081 | WebSocket 实时推送 |
 
 ---
@@ -238,7 +242,7 @@ AI 会自动进入循环：**发消息到 Web UI → 等你回复 → 执行任�
 
 ---
 
-## OpenAI 兼容 API
+## OpenAI / Anthropic 兼容 API
 
 IDE 中的 AI 进入 chat() 循环后，你可以通过标准 OpenAI API 与它交互。
 
@@ -248,6 +252,16 @@ IDE 中的 AI 进入 chat() 循环后，你可以通过标准 OpenAI API 与它�
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"cascade","messages":[{"role":"user","content":"你好"}]}'
+
+# OpenAI Responses
+curl http://127.0.0.1:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.3-codex","input":"你好"}'
+
+# Anthropic Messages
+curl http://127.0.0.1:8080/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4-20250514","max_tokens":1024,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
 ### Python
@@ -334,6 +348,8 @@ mcp-chat/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/v1/chat/completions` | OpenAI 兼容 Chat API |
+| POST | `/v1/responses` | OpenAI 兼容 Responses API |
+| POST | `/v1/messages` | Anthropic 兼容 Messages API |
 | GET | `/v1/models` | 模型列表 |
 | POST | `/mcp` | MCP Streamable HTTP 端点 |
 | GET | `/poll` | 长轮询状态更新 |
@@ -366,11 +382,11 @@ GitHub Copilot Agent 模式允许 AI 在一次对话中无限次调用工具（`
 </details>
 
 <details>
-<summary><strong>OpenAI API 是怎么实现的？</strong></summary>
+<summary><strong>OpenAI / Anthropic API 是怎么实现的？</strong></summary>
 
-server.py 内置了一个 `/v1/chat/completions` 端点。收到 API 请求后，server 会把消息注入到当前 chat() 循环中，等 AI 回复后再以 OpenAI 格式返回。支持流式（SSE）和非流式响应。
+server.py 内置了 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 端点。收到 API 请求后，server 会把消息注入到当前 chat() 循环中，等 AI 回复后再包装成对应格式返回。支持流式（SSE）和非流式响应。
 
-本质上是：**外部 API 请求 → server 转发给 IDE AI → AI 回复 → server 包装成 OpenAI 格式返回**。
+本质上是：**外部 API 请求 → server 转发给 IDE AI → AI 回复 → server 包装成 OpenAI/Anthropic 格式返回**。
 </details>
 
 <details>
